@@ -1,0 +1,2 @@
+# Killed AV check
+✅ ESET
