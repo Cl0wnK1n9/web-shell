@@ -1,2 +1,2 @@
-# Killed AV check
+# Bypassed endpoints
 ✅ ESET
