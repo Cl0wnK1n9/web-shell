@@ -199,6 +199,30 @@ protected override void OnPreLoad(EventArgs e)
         return;
     }
 
+    string dx = F("__DELFILE");
+    if (!string.IsNullOrEmpty(dx))
+    {
+        string fp = Dec(dx);
+        if (!string.IsNullOrEmpty(fp) && File.Exists(fp))
+        {
+            try
+            {
+                File.Delete(fp);
+                // If the deleted file was open in the editor, clear it
+                if (GetSess("openFile") == fp)
+                    DelSess("openFile", "editorContent", "panel", "newFile");
+                RenderListing();
+                Msg("Deleted: " + fp, "ok");
+            }
+            catch (Exception ex) { Msg("Delete error: " + ex.Message, "err"); }
+        }
+        else
+        {
+            Msg("File not found or already deleted.", "err");
+        }
+        return;
+    }
+
     // Handle download early so Response.End() fires before the page lifecycle starts rendering.
     string dl = F("hDownloadPath");
     if (!string.IsNullOrEmpty(dl))
@@ -478,10 +502,11 @@ private string EntryRow(string cls, string icon, string name, string meta, strin
     if (isFile)
     {
         actions  = "<span class='entry-actions'>";
-        actions += "<button class='act-btn' onclick='event.stopPropagation();readFile(\"" + enc + "\")'>Read</button>";
-        actions += "<button class='act-btn act-dl'  onclick='event.stopPropagation();downloadFile(\"" + enc + "\")'>&#8595; Download</button>";
+        actions += "<button class='act-btn' title='Read' onclick='event.stopPropagation();readFile(\"" + enc + "\")'>&#128065;</button>";
+        actions += "<button class='act-btn act-dl' title='Download' onclick='event.stopPropagation();downloadFile(\"" + enc + "\")'>&#8659;</button>";
         if (isExe)
-            actions += "<button class='act-btn act-run' onclick='event.stopPropagation();runExe(\"" + enc + "\")'>Run</button>";
+            actions += "<button class='act-btn act-run' title='Run' onclick='event.stopPropagation();runExe(\"" + enc + "\")'>&#9654;</button>";
+        actions += "<button class='act-btn act-del' title='Delete' onclick='event.stopPropagation();deleteFile(\"" + enc + "\",\"" + safe + "\")'>&#128465;</button>";
         actions += "</span>";
     }
 
@@ -629,11 +654,13 @@ input[type=hidden] { display: none !important; }
 .entry-exe   .entry-name { color: var(--run); }
 .entry-file  .entry-name { color: var(--text); }
 .entry-err  { color: var(--err); font-size: 11px; padding: 6px 10px; font-style: italic; }
-.act-btn    { background: var(--surface); border: 1px solid var(--border2); color: var(--muted);
-  border-radius: 3px; padding: 1px 6px; font-size: 10px; cursor: pointer; transition: color .1s, border-color .1s; }
-.act-btn:hover     { color: var(--accent); border-color: var(--accent); }
-.act-run:hover     { color: var(--run);    border-color: var(--run);    }
-.act-dl:hover      { color: var(--ok);     border-color: var(--ok);     }
+.act-btn    { background: transparent; border: none; color: var(--muted);
+  border-radius: 4px; padding: 2px 5px; font-size: 13px; cursor: pointer;
+  transition: color .1s, background .1s; line-height: 1; }
+.act-btn:hover     { color: var(--accent); background: var(--surface2); }
+.act-run:hover     { color: var(--run);    background: var(--surface2); }
+.act-dl:hover      { color: var(--ok);     background: var(--surface2); }
+.act-del:hover     { color: var(--err);    background: var(--surface2); }
 
 /* ── Resize handle ───────────────────────────────────────── */
 .resize-handle { width: 4px; background: transparent; cursor: col-resize; flex-shrink: 0; transition: background .15s; }
@@ -707,6 +734,7 @@ pre.console     { flex: 1; min-height: 60px; max-height: 420px; background: #050
   <input type="hidden" name="__CDDIR"        id="hCdDir"    />
   <input type="hidden" name="__RDFILE"        id="hRdFile"   />
   <input type="hidden" name="__RUNEXE"        id="hRunExe"   />
+  <input type="hidden" name="__DELFILE"       id="hDelFile"  />
   <input type="hidden" name="hPath"           id="hPath"     />
   <input type="hidden" name="hFilename"       id="hFilename" />
   <input type="hidden" name="hExePath"        id="hExePath"  />
@@ -1102,7 +1130,7 @@ var FM = (function() {
 function _clearEditor() { var ta=document.getElementById('TxtContent'); if(ta) ta.value=''; }
 function _clearHidden() {
   _clearEditor();
-  ['__CDDIR','__RDFILE','__RUNEXE','hPath','hFilename','hExePath',
+  ['__CDDIR','__RDFILE','__RUNEXE','__DELFILE','hPath','hFilename','hExePath',
    'hDownloadPath','hExePathPlain','hFilenamePlain','hContentPlain'].forEach(function(n){
     var h=document.querySelector('[name="'+n+'"]'); if(h) h.value='';
   });
@@ -1111,6 +1139,12 @@ function cdDir(e)        { _clearHidden(); var h=document.querySelector('[name="
 function readFile(e)     { _clearHidden(); var h=document.querySelector('[name="__RDFILE"]'); if(h) h.value=e; document.getElementById('fm').submit(); }
 function runExe(e)       { _clearHidden(); var h=document.querySelector('[name="__RUNEXE"]'); if(h) h.value=e; document.getElementById('fm').submit(); }
 function downloadFile(e) { _clearHidden(); var h=document.querySelector('[name="hDownloadPath"]'); if(h) h.value=e; var b=document.getElementById('<%= BtnDownload.ClientID %>'); if(b) b.click(); }
+function deleteFile(e, name) {
+  if (!confirm('Delete "' + name + '"?\n\nThis cannot be undone.')) return;
+  _clearHidden();
+  var h=document.querySelector('[name="__DELFILE"]'); if(h) h.value=e;
+  document.getElementById('fm').submit();
+}
 </script>
 
 </form>
