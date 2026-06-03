@@ -1,2 +1,3 @@
-# Bypassed endpoints
+# Bypassed
 ✅ ESET
+✅ Cloudflare
