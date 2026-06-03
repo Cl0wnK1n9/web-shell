@@ -142,7 +142,7 @@ private string Resolve(string path)
 // Open a file into the editor and switch to editor panel
 private void OpenInEditor(string fullPath)
 {
-    TxtContent.Text   = File.ReadAllText(fullPath, Encoding.UTF8);
+    SetSess("editorContent", File.ReadAllText(fullPath, Encoding.UTF8));
     SetSess("openFile", fullPath);
     SetSess("panel", "editor");
 }
@@ -192,9 +192,31 @@ protected override void OnPreLoad(EventArgs e)
         if (!string.IsNullOrEmpty(rp))
         {
             SetSess("runExe", rp); SetSess("panel", "exec");
-            TxtExeArgs.Text = TxtExeOutput.Text = "";
+            TxtExeArgs.Text = "";
             RenderListing();
             Msg("Ready to run: " + Path.GetFileName(rp), "info");
+        }
+        return;
+    }
+
+    // Handle download early so Response.End() fires before the page lifecycle starts rendering.
+    string dl = F("hDownloadPath");
+    if (!string.IsNullOrEmpty(dl))
+    {
+        string fp = Dec(dl);
+        if (!string.IsNullOrEmpty(fp) && File.Exists(fp))
+        {
+            try
+            {
+                byte[] data  = File.ReadAllBytes(fp);
+                string fname = Path.GetFileName(fp);
+                Response.Clear();
+                Response.ContentType = "application/octet-stream";
+                Response.AddHeader("Content-Disposition", "attachment; filename=\"" + fname + "\"");
+                Response.AddHeader("Content-Length", data.Length.ToString());
+                Response.BinaryWrite(data); Response.Flush(); Response.End();
+            }
+            catch { /* fall through to normal page load if anything goes wrong */ }
         }
     }
 }
@@ -251,15 +273,15 @@ protected void BtnWrite_Click(object sender, EventArgs e)
 
     string full = Resolve(fname);
 
-    // Content arrives Base64-encoded (set by prepSave()) to bypass request validation.
-    string b64 = F("hContentPlain");
+    // Content is base64-encoded by prepSave() into hContentPlain and read via
+    // Request.Unvalidated so ASP.NET pipeline validation never sees raw HTML/script.
+    string b64 = (Request.Unvalidated.Form["hContentPlain"] ?? "").Trim();
     string body = "";
     if (!string.IsNullOrEmpty(b64))
     {
         try   { body = Encoding.UTF8.GetString(Convert.FromBase64String(b64)); }
-        catch { body = b64; }  // not valid b64 -- use raw as fallback
+        catch { body = b64; }
     }
-    if (string.IsNullOrEmpty(body)) body = TxtContent.Text;
 
     try
     {
@@ -273,16 +295,14 @@ protected void BtnWrite_Click(object sender, EventArgs e)
 protected void BtnNew_Click(object sender, EventArgs e)
 {
     Require();
-    DelSess("openFile");
-    TxtContent.Text = "";
+    DelSess("openFile", "editorContent");
     SetSess("panel", "editor"); SetSess("newFile", "1");
     Msg("New file - enter a name and content, then Save.", "info");
 }
 
 protected void BtnCancelEdit_Click(object sender, EventArgs e)
 {
-    DelSess("openFile", "panel", "newFile");
-    TxtContent.Text = "";
+    DelSess("openFile", "panel", "newFile", "editorContent");
 }
 
 protected void BtnUp_Click(object sender, EventArgs e)
@@ -370,8 +390,7 @@ protected void BtnExec_Click(object sender, EventArgs e)
         if (!done) sb.AppendLine("(Process still running - output captured so far)");
 
         string output = sb.ToString();
-        TxtExeOutput.Text         = output;
-        LitExecOutput.Text        = Server.HtmlEncode(output).Replace("\r", "").Replace("\n", "<br/>");
+                LitExecOutput.Text        = Server.HtmlEncode(output).Replace("\r", "").Replace("\n", "<br/>");
         PanelExecResult.Visible   = true;
         SetSess("panel", "exec");
         RenderListing();
@@ -381,8 +400,7 @@ protected void BtnExec_Click(object sender, EventArgs e)
     catch (Exception ex)
     {
         string output = "ERROR: " + ex.Message;
-        TxtExeOutput.Text         = output;
-        LitExecOutput.Text        = Server.HtmlEncode(output);
+                LitExecOutput.Text        = Server.HtmlEncode(output);
         PanelExecResult.Visible   = true;
         SetSess("panel","exec");
         RenderListing();
@@ -393,7 +411,7 @@ protected void BtnExec_Click(object sender, EventArgs e)
 protected void BtnCancelExec_Click(object sender, EventArgs e)
 {
     DelSess("runExe", "panel");
-    TxtExeArgs.Text = TxtExeOutput.Text = "";
+    TxtExeArgs.Text = "";
 }
 
 // ============================================================
@@ -461,7 +479,7 @@ private string EntryRow(string cls, string icon, string name, string meta, strin
     {
         actions  = "<span class='entry-actions'>";
         actions += "<button class='act-btn' onclick='event.stopPropagation();readFile(\"" + enc + "\")'>Read</button>";
-        actions += "<button class='act-btn act-dl'  onclick='event.stopPropagation();downloadFile(\"" + enc + "\")'>DL</button>";
+        actions += "<button class='act-btn act-dl'  onclick='event.stopPropagation();downloadFile(\"" + enc + "\")'>&#8595; Download</button>";
         if (isExe)
             actions += "<button class='act-btn act-run' onclick='event.stopPropagation();runExe(\"" + enc + "\")'>Run</button>";
         actions += "</span>";
@@ -504,6 +522,7 @@ private void Msg(string text, string kind)
 
 // Inline view helpers used in <%=  %> expressions in the HTML below
 protected string OpenFilePath()   { return Server.HtmlEncode(GetSess("openFile")); }
+protected string EditorContent()  { return Server.HtmlEncode(GetSess("editorContent")); }
 protected string RunExePath()     { return Server.HtmlEncode(GetSess("runExe")); }
 protected string OpenFilePathJS() { return JsStr(GetSess("openFile")); }
 protected string RunExePathJS()   { return JsStr(GetSess("runExe")); }
@@ -723,8 +742,8 @@ pre.console     { flex: 1; min-height: 60px; max-height: 420px; background: #050
       <asp:Button ID="BtnLogout" runat="server" Text="Lock" CssClass="btn-logout" OnClick="BtnLogout_Click" CausesValidation="false"/>
     </div>
 
-    <%-- Hidden download trigger (invisible, clicked by JS downloadFile()) --%>
-    <asp:Button ID="BtnDownload" runat="server" OnClick="BtnDownload_Click" style="display:none" CausesValidation="false"/>
+    <%-- Hidden download trigger: UseSubmitBehavior=false renders as type="button" so it cannot interfere with BtnUpload --%>
+    <asp:Button ID="BtnDownload" runat="server" OnClick="BtnDownload_Click" UseSubmitBehavior="false" style="display:none" CausesValidation="false"/>
 
     <div class="layout">
 
@@ -732,8 +751,8 @@ pre.console     { flex: 1; min-height: 60px; max-height: 420px; background: #050
       <div class="sidebar" id="sidebar">
 
         <div class="sidebar-nav">
-          <asp:Button ID="BtnUp"  runat="server" Text="Up"       CssClass="btn btn-ghost btn-sm"   OnClick="BtnUp_Click"/>
-          <asp:Button ID="BtnNew" runat="server" Text="New File"  CssClass="btn btn-primary btn-sm" OnClick="BtnNew_Click"/>
+          <asp:Button ID="BtnUp"  runat="server" Text="Up"       CssClass="btn btn-ghost btn-sm"   OnClick="BtnUp_Click" OnClientClick="_clearHidden();"/>
+          <asp:Button ID="BtnNew" runat="server" Text="New File"  CssClass="btn btn-primary btn-sm" OnClick="BtnNew_Click" OnClientClick="_clearHidden();"/>
         </div>
 
         <div class="sidebar-search">
@@ -742,7 +761,7 @@ pre.console     { flex: 1; min-height: 60px; max-height: 420px; background: #050
 
         <div class="sidebar-upload">
           <asp:FileUpload ID="FileUpload1" runat="server" CssClass="upload-input"/>
-          <asp:Button ID="BtnUpload" runat="server" Text="Upload" CssClass="btn btn-ghost btn-sm" OnClick="BtnUpload_Click"/>
+          <asp:Button ID="BtnUpload" runat="server" Text="Upload" CssClass="btn btn-ghost btn-sm" OnClick="BtnUpload_Click" OnClientClick="_clearHidden();"/>
         </div>
 
         <div class="sidebar-list" id="sidebarList">
@@ -791,11 +810,11 @@ pre.console     { flex: 1; min-height: 60px; max-height: 420px; background: #050
             <span style="font-size:11px;color:var(--muted);white-space:nowrap">File:</span>
             <input type="text" id="visFilename" placeholder="filename.txt" value="<%= OpenFilePath() %>"/>
           </div>
-          <asp:TextBox ID="TxtContent" runat="server" TextMode="MultiLine" CssClass="editor"/>
+          <textarea id="TxtContent" class="editor"><%= EditorContent() %></textarea>
           <div class="editor-actions">
             <asp:Button ID="BtnWrite"      runat="server" Text="Save"  CssClass="btn btn-success" OnClick="BtnWrite_Click"
                         OnClientClick="return FM.prepSave();" UseSubmitBehavior="true"/>
-            <asp:Button ID="BtnCancelEdit" runat="server" Text="Close" CssClass="btn btn-danger"  OnClick="BtnCancelEdit_Click" CausesValidation="false"/>
+            <asp:Button ID="BtnCancelEdit" runat="server" Text="Close" CssClass="btn btn-danger"  OnClick="BtnCancelEdit_Click" CausesValidation="false" OnClientClick="_clearHidden();"/>
           </div>
         </div>
 
@@ -809,14 +828,14 @@ pre.console     { flex: 1; min-height: 60px; max-height: 420px; background: #050
             <label>Args:</label>
             <asp:TextBox ID="TxtExeArgs" runat="server" placeholder="optional arguments..."/>
           </div>
-          <asp:TextBox ID="TxtExeOutput" runat="server" TextMode="MultiLine" CssClass="console" ReadOnly="true" style="display:none"/>
+          <textarea class="console" style="display:none" aria-hidden="true"></textarea>
           <%-- Server-rendered output shown immediately without JS panel switching --%>
           <asp:Panel ID="PanelExecResult" runat="server" Visible="false">
             <pre class="console" id="execResultPre" style="overflow-y:auto; max-height:420px; white-space:pre-wrap; word-break:break-all;"><asp:Literal ID="LitExecOutput" runat="server"/></pre>
           </asp:Panel>
           <div class="exec-actions">
-            <asp:Button ID="BtnExec" runat="server" Text="Run" CssClass="btn btn-run" OnClick="BtnExec_Click"/>
-            <asp:Button ID="BtnCancelExec" runat="server" Text="Close" CssClass="btn btn-danger" OnClick="BtnCancelExec_Click" CausesValidation="false"/>
+            <asp:Button ID="BtnExec" runat="server" Text="Run" CssClass="btn btn-run" OnClick="BtnExec_Click" OnClientClick="return FM.prepExec();"/>
+            <asp:Button ID="BtnCancelExec" runat="server" Text="Close" CssClass="btn btn-danger" OnClick="BtnCancelExec_Click" CausesValidation="false" OnClientClick="_clearHidden();"/>
           </div>
         </div>
 
@@ -947,21 +966,25 @@ var FM = (function() {
 
   // ── Listing actions ──────────────────────────────────────────
   function cdDir(enc) {
+    _clearHidden();
     _set('__CDDIR', enc);
     document.getElementById('fm').submit();
   }
 
   function readFile(enc) {
+    _clearHidden();
     _set('__RDFILE', enc);
     document.getElementById('fm').submit();
   }
 
   function runExe(enc) {
+    _clearHidden();
     _set('__RUNEXE', enc);
     document.getElementById('fm').submit();
   }
 
   function downloadFile(enc) {
+    _clearHidden();
     _set('hDownloadPath', enc);
     var btn = document.getElementById('<%= BtnDownload.ClientID %>');
     if (btn) btn.click();
@@ -970,6 +993,7 @@ var FM = (function() {
   // ── Button pre-submit helpers (called by OnClientClick) ──────
   // prepGo: encrypt the typed path before posting
   function prepGo() {
+    _clearHidden();
     _set('hPath', _aesEncrypt(_get('visPath')));
     return true;
   }
@@ -978,14 +1002,15 @@ var FM = (function() {
   // Synchronous -- no async needed, avoids all timing issues
   function prepSave() {
     _set('hFilenamePlain', _get('visFilename'));
-    var ta = document.getElementById('<%= TxtContent.ClientID %>');
+    var ta = document.getElementById('TxtContent');
     _set('hContentPlain', ta ? _b64(ta.value) : '');
-    if (ta) ta.value = '';  // blank so request validation passes
+    ta.value = '';  // blank before post so ASP.NET never sees raw HTML in TxtContentPlain
     return true;
   }
 
   // prepExec: encrypt the exe path before posting
   function prepExec() {
+    _clearHidden();
     var path = _get('visExePath');
     _set('hExePath',      _aesEncrypt(path));  // AES-encrypted (preferred)
     _set('hExePathPlain', path);               // plain fallback if AES key missing
@@ -1074,10 +1099,18 @@ var FM = (function() {
 
 // These must be global because they are called from inline onclick= attributes
 // generated by the server-side RenderListing() method.
-function cdDir(e)        { FM._cdDir        ? FM._cdDir(e)        : (function(){ var h=document.querySelector('[name="__CDDIR"]'); if(h) h.value=e; document.getElementById('fm').submit(); })(); }
-function readFile(e)     { var h=document.querySelector('[name="__RDFILE"]');    if(h) h.value=e; document.getElementById('fm').submit(); }
-function runExe(e)       { var h=document.querySelector('[name="__RUNEXE"]');    if(h) h.value=e; document.getElementById('fm').submit(); }
-function downloadFile(e) { var h=document.querySelector('[name="hDownloadPath"]'); if(h) h.value=e; var b=document.getElementById('<%= BtnDownload.ClientID %>'); if(b) b.click(); }
+function _clearEditor() { var ta=document.getElementById('TxtContent'); if(ta) ta.value=''; }
+function _clearHidden() {
+  _clearEditor();
+  ['__CDDIR','__RDFILE','__RUNEXE','hPath','hFilename','hExePath',
+   'hDownloadPath','hExePathPlain','hFilenamePlain','hContentPlain'].forEach(function(n){
+    var h=document.querySelector('[name="'+n+'"]'); if(h) h.value='';
+  });
+}
+function cdDir(e)        { _clearHidden(); var h=document.querySelector('[name="__CDDIR"]');  if(h) h.value=e; document.getElementById('fm').submit(); }
+function readFile(e)     { _clearHidden(); var h=document.querySelector('[name="__RDFILE"]'); if(h) h.value=e; document.getElementById('fm').submit(); }
+function runExe(e)       { _clearHidden(); var h=document.querySelector('[name="__RUNEXE"]'); if(h) h.value=e; document.getElementById('fm').submit(); }
+function downloadFile(e) { _clearHidden(); var h=document.querySelector('[name="hDownloadPath"]'); if(h) h.value=e; var b=document.getElementById('<%= BtnDownload.ClientID %>'); if(b) b.click(); }
 </script>
 
 </form>
