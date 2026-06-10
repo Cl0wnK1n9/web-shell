@@ -3,4 +3,4 @@
 
 ✅ Cloudflare
 
-JSP shell is unstable and fuck java
+Now it good to go
