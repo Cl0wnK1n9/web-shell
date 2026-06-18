@@ -1,6 +1,6 @@
 # Bypassed
 ✅ ESET
 
-✅ Cloudflare
+[!] Cloudflare
 
 Now it good to go
